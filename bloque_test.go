@@ -123,3 +123,90 @@ func TestMaxPopWaiters(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, ErrMaxWaiters, err)
 }
+
+func TestOpAfterClose(t *testing.T) {
+	q := New()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	q.Push(ctx, "1")
+	q.Push(ctx, "2")
+	q.Close()
+	item, err := q.Pop(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "1", item.(string))
+	item, err = q.Pop(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "2", item.(string))
+	_, err = q.Pop(ctx)
+	require.Equal(t, ErrQueueClosed, err)
+
+	err = q.Push(ctx, "1")
+	require.Equal(t, ErrQueueClosed, err)
+}
+
+func TestClosePopWaiters(t *testing.T) {
+	q := New()
+
+	poppers := 4
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	doneChan := make(chan error)
+	for i := 0; i < poppers; i++ {
+		go func(i int) {
+			_, err := q.Pop(ctx)
+			doneChan <- err
+		}(i)
+	}
+
+	for q.PopWaiters() < poppers {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	q.Close()
+
+	for i := 0; i < poppers; i++ {
+		select {
+		case err := <-doneChan:
+			require.Equal(t, ErrQueueClosed, err)
+
+		case <-time.After(1 * time.Second):
+			require.Fail(t, "timeout waiting for condition")
+		}
+	}
+}
+
+func TestClosePushWaiters(t *testing.T) {
+	q := New(WithCapacity(1))
+
+	pushers := 4
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	// one to fill up the pushers limit
+	q.Push(ctx, -1)
+
+	doneChan := make(chan error)
+	for i := 0; i < pushers; i++ {
+		go func(i int) {
+			err := q.Push(ctx, i)
+			doneChan <- err
+		}(i)
+	}
+
+	for q.PushWaiters() < pushers {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	q.Close()
+
+	for i := 0; i < pushers; i++ {
+		select {
+		case err := <-doneChan:
+			require.Equal(t, ErrQueueClosed, err)
+
+		case <-time.After(1 * time.Second):
+			require.Fail(t, "timeout waiting for condition")
+		}
+	}
+}
