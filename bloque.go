@@ -13,6 +13,10 @@ var (
 	// ErrMaxWaiters is returned when maximum number of blocked goroutines
 	// on Push() or Pop() calls is reached.
 	ErrMaxWaiters = fmt.Errorf("max waiters reached")
+
+	// ErrQueueClosed is returned when a Push or Pop operation is attempted
+	// after or has been unblocked due to queue being closed.
+	ErrQueueClosed = fmt.Errorf("queue is closed")
 )
 
 // Bloque is a simple implementation of a blocking fifo queue. It allows
@@ -23,6 +27,7 @@ type Bloque struct {
 	capacity       int
 	maxPushWaiters int
 	maxPopWaiters  int
+	closed         bool
 	mutex          sync.Mutex
 
 	pushWaitersList *list.List
@@ -70,7 +75,7 @@ func (q *Bloque) Push(ctx context.Context, item interface{}) error {
 	// similar to condition variables spurious wake ups where our
 	// blocked goroutine would be notified but someone else beat us
 	// to the item.
-	for q.capacity > 0 && q.itemQueue.Len() >= q.capacity {
+	for !q.closed && q.capacity > 0 && q.itemQueue.Len() >= q.capacity {
 		// straight up, do not exceed waiters constrain
 		if q.maxPushWaiters > 0 && q.pushWaitersList.Len() >= q.maxPushWaiters {
 			q.mutex.Unlock()
@@ -104,6 +109,11 @@ func (q *Bloque) Push(ctx context.Context, item interface{}) error {
 		}
 	}
 
+	if q.closed {
+		q.mutex.Unlock()
+		return ErrQueueClosed
+	}
+
 	q.itemQueue.PushBack(item)
 	q.unblockNextWaiterLocked(q.popWaitersList)
 	q.mutex.Unlock()
@@ -118,6 +128,11 @@ func (q *Bloque) Pop(ctx context.Context) (item interface{}, err error) {
 	q.mutex.Lock()
 
 	for q.itemQueue.Len() == 0 {
+		if q.closed {
+			q.mutex.Unlock()
+			return nil, ErrQueueClosed
+		}
+
 		if q.maxPopWaiters > 0 && q.popWaitersList.Len() >= q.maxPopWaiters {
 			q.mutex.Unlock()
 			return nil, ErrMaxWaiters
@@ -164,6 +179,37 @@ func (q *Bloque) Len() int {
 	defer q.mutex.Unlock()
 
 	return q.itemQueue.Len()
+}
+
+// PushWaiters returns the number of currently blocked Push routines.
+func (q *Bloque) PushWaiters() int {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	return q.pushWaitersList.Len()
+}
+
+// PopWaiters returns the number of currently blocked Pop routines.
+func (q *Bloque) PopWaiters() int {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	return q.popWaitersList.Len()
+}
+
+// Close marks the queue as closed and unblocks all blocked Pop and Push
+// routines with ErrQueueClosed.
+func (q *Bloque) Close() {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	q.closed = true
+	for q.popWaitersList.Len() > 0 {
+		q.unblockNextWaiterLocked(q.popWaitersList)
+	}
+	for q.pushWaitersList.Len() > 0 {
+		q.unblockNextWaiterLocked(q.pushWaitersList)
+	}
 }
 
 func (q *Bloque) unblockNextWaiterLocked(waiters *list.List) {

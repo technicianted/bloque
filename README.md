@@ -6,6 +6,7 @@ Bloque is a simple and straightforward concurrent blocking queue for Go. Most im
 * Blocking behavior: calling go routines will block if the operation cannot be satisfied.
 * Context semantics: calls can safely be cancelled by their contexts.
 * Strong ordering: blocked go routines will be unblocked in fifo manner.
+* Graceful closing and draining: queue can be closed unblocking go routines until completely drained.
 
 ### Usage
 
