@@ -142,7 +142,7 @@ func (q *Bloque) Pop(ctx context.Context) (item interface{}, err error) {
 			waitChan: make(chan interface{}),
 			waiting:  true,
 		}
-		q.popWaitersList.PushBack(waiterItem)
+		waiterListElement := q.popWaitersList.PushBack(waiterItem)
 		q.mutex.Unlock()
 
 		select {
@@ -160,6 +160,9 @@ func (q *Bloque) Pop(ctx context.Context) (item interface{}, err error) {
 				q.mutex.Unlock()
 			} else {
 				waiterItem.mutex.Unlock()
+				q.mutex.Lock()
+				q.popWaitersList.Remove(waiterListElement)
+				q.mutex.Unlock()
 			}
 			return nil, ctx.Err()
 		}
